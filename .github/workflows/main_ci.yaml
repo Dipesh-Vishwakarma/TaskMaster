@@ -7,9 +7,16 @@ on:
       - main
   workflow_dispatch:
 
+# ── Shared env ────────────────────────────────────────────────────────────────
+env:
+  REGISTRY: ghcr.io
+
 jobs:
-  build-and-push:
-    name: Build & Push
+  # ────────────────────────────────────────────────────────────────────────────
+  # JOB 1 — Backend
+  # ────────────────────────────────────────────────────────────────────────────
+  build-backend:
+    name: Build & Push — Backend
     runs-on: self-hosted          # ← your self-hosted Linux runner
 
     permissions:
@@ -17,19 +24,19 @@ jobs:
       packages: write             # required to push to GHCR
 
     steps:
-      # ── 1. Checkout ────────────────────────────────────────────────────────
+      # ── 1. Checkout ──────────────────────────────────────────────────────
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # ── 2. Derive tags ────────────────────────────────────────────────────
+      # ── 2. Derive tags ───────────────────────────────────────────────────
       # github.repository keeps original casing (e.g. Dipesh-Vishwakarma/...)
       # GHCR requires all-lowercase, so we lowercase it here.
       # run_number increments on every run: v1, v2, v3 …
-      - name: Set image tags
+      - name: Set image tags (backend)
         id: meta
         run: |
           REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
-          IMAGE="ghcr.io/${REPO}"
+          IMAGE="${{ env.REGISTRY }}/${REPO}/backend"
           TAG="v${{ github.run_number }}"
           SHA_SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
 
@@ -40,61 +47,147 @@ jobs:
           # Full comma-separated tag list consumed by build-push-action
           echo "tags=${IMAGE}:${TAG},${IMAGE}:latest,${IMAGE}:sha-${SHA_SHORT}" >> "$GITHUB_OUTPUT"
 
-      # ── 3. Set up Docker Buildx ────────────────────────────────────────────
+      # ── 3. Set up Docker Buildx ──────────────────────────────────────────
       # No explicit driver — lets setup-buildx-action pick the best available
       # driver on the runner, which avoids the "build reference" summary error
       # that the docker-container driver triggers on self-hosted runners.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # ── 4. Log in to GHCR ─────────────────────────────────────────────────
+      # ── 4. Log in to GHCR ────────────────────────────────────────────────
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.PAT_TOKEN }}
 
-      # ── 5. Build & push ───────────────────────────────────────────────────
-      - name: Build and push Docker image
+      # ── 5. Build & push ──────────────────────────────────────────────────
+      - name: Build and push backend image
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: ./Dockerfile
+          context: ./backend
+          file: ./backend/Dockerfile
           push: true
           # Tags computed in step 2 (all lowercase):
-          #   ghcr.io/<owner>/<repo>:v2          ← this run's version
-          #   ghcr.io/<owner>/<repo>:latest       ← always the newest
-          #   ghcr.io/<owner>/<repo>:sha-a3f9c12  ← immutable commit pin
+          #   ghcr.io/<owner>/<repo>/backend:v2          ← this run's version
+          #   ghcr.io/<owner>/<repo>/backend:latest       ← always the newest
+          #   ghcr.io/<owner>/<repo>/backend:sha-a3f9c12  ← immutable commit pin
           tags: ${{ steps.meta.outputs.tags }}
           # Layer cache on runner disk — fast rebuilds with no extra registry.
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to:   type=local,dest=/tmp/.buildx-cache-new,mode=max
+          cache-from: type=local,src=/tmp/.buildx-cache-backend
+          cache-to:   type=local,dest=/tmp/.buildx-cache-backend-new,mode=max
           # OCI standard labels
           labels: |
-            org.opencontainers.image.title=${{ github.repository }}
-            org.opencontainers.image.description=DevOps Portfolio - Dipesh Vishwakarma
+            org.opencontainers.image.title=${{ github.repository }}/backend
+            org.opencontainers.image.description=TaskMaster Backend (FastAPI + PostgreSQL)
             org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
 
-      # ── 6. Rotate build cache ─────────────────────────────────────────────
+      # ── 6. Rotate build cache ────────────────────────────────────────────
       # Replace old cache with the newly written one so it never grows unboundedly.
-      - name: Rotate build cache
+      - name: Rotate backend build cache
         run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+          rm -rf /tmp/.buildx-cache-backend
+          mv /tmp/.buildx-cache-backend-new /tmp/.buildx-cache-backend
 
-      # ── 7. Summary ────────────────────────────────────────────────────────
-      - name: Print image summary
+      # ── 7. Summary ───────────────────────────────────────────────────────
+      - name: Print backend image summary
         run: |
-          echo "### 🐳 Image published" >> "$GITHUB_STEP_SUMMARY"
+          echo "### 🐳 Backend image published" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field   | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Version | \`${{ steps.meta.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Latest  | \`${{ steps.meta.outputs.image }}:latest\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Commit  | \`${{ steps.meta.outputs.sha_short }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field    | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version  | \`${{ steps.meta.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Latest   | \`${{ steps.meta.outputs.image }}:latest\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit   | \`${{ steps.meta.outputs.sha_short }}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Registry | ghcr.io (private) |" >> "$GITHUB_STEP_SUMMARY"
-      # ---------------------End-of-CI---------------------------------------------
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # JOB 2 — Frontend
+  # ────────────────────────────────────────────────────────────────────────────
+  build-frontend:
+    name: Build & Push — Frontend
+    runs-on: self-hosted          # ← your self-hosted Linux runner
+
+    permissions:
+      contents: read
+      packages: write             # required to push to GHCR
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ── 2. Derive tags ───────────────────────────────────────────────────
+      - name: Set image tags (frontend)
+        id: meta
+        run: |
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="${{ env.REGISTRY }}/${REPO}/frontend"
+          TAG="v${{ github.run_number }}"
+          SHA_SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
+
+          echo "image=${IMAGE}"          >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}"              >> "$GITHUB_OUTPUT"
+          echo "sha_short=${SHA_SHORT}"  >> "$GITHUB_OUTPUT"
+
+          # Full comma-separated tag list consumed by build-push-action
+          echo "tags=${IMAGE}:${TAG},${IMAGE}:latest,${IMAGE}:sha-${SHA_SHORT}" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Set up Docker Buildx ──────────────────────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── 4. Log in to GHCR ────────────────────────────────────────────────
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.PAT_TOKEN }}
+
+      # ── 5. Build & push ──────────────────────────────────────────────────
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          # Tags computed in step 2 (all lowercase):
+          #   ghcr.io/<owner>/<repo>/frontend:v2          ← this run's version
+          #   ghcr.io/<owner>/<repo>/frontend:latest       ← always the newest
+          #   ghcr.io/<owner>/<repo>/frontend:sha-a3f9c12  ← immutable commit pin
+          tags: ${{ steps.meta.outputs.tags }}
+          # Layer cache on runner disk — fast rebuilds with no extra registry.
+          cache-from: type=local,src=/tmp/.buildx-cache-frontend
+          cache-to:   type=local,dest=/tmp/.buildx-cache-frontend-new,mode=max
+          # OCI standard labels
+          labels: |
+            org.opencontainers.image.title=${{ github.repository }}/frontend
+            org.opencontainers.image.description=TaskMaster Frontend (React + Nginx)
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+
+      # ── 6. Rotate build cache ────────────────────────────────────────────
+      - name: Rotate frontend build cache
+        run: |
+          rm -rf /tmp/.buildx-cache-frontend
+          mv /tmp/.buildx-cache-frontend-new /tmp/.buildx-cache-frontend
+
+      # ── 7. Summary ───────────────────────────────────────────────────────
+      - name: Print frontend image summary
+        run: |
+          echo "### 🐳 Frontend image published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field    | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version  | \`${{ steps.meta.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Latest   | \`${{ steps.meta.outputs.image }}:latest\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit   | \`${{ steps.meta.outputs.sha_short }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Registry | ghcr.io (private) |" >> "$GITHUB_STEP_SUMMARY"
+  # ---------------------End-of-CI---------------------------------------------
