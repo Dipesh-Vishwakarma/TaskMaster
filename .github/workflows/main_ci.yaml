@@ -1,0 +1,100 @@
+name: Docker Build & Push image to GHCR
+
+# Triggers on every push to main branch (and manually via workflow_dispatch).
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    name: Build & Push
+    runs-on: self-hosted          # ← your self-hosted Linux runner
+
+    permissions:
+      contents: read
+      packages: write             # required to push to GHCR
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ── 2. Derive tags ────────────────────────────────────────────────────
+      # github.repository keeps original casing (e.g. Dipesh-Vishwakarma/...)
+      # GHCR requires all-lowercase, so we lowercase it here.
+      # run_number increments on every run: v1, v2, v3 …
+      - name: Set image tags
+        id: meta
+        run: |
+          REPO=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${REPO}"
+          TAG="v${{ github.run_number }}"
+          SHA_SHORT=$(echo "${{ github.sha }}" | cut -c1-7)
+
+          echo "image=${IMAGE}"          >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}"              >> "$GITHUB_OUTPUT"
+          echo "sha_short=${SHA_SHORT}"  >> "$GITHUB_OUTPUT"
+
+          # Full comma-separated tag list consumed by build-push-action
+          echo "tags=${IMAGE}:${TAG},${IMAGE}:latest,${IMAGE}:sha-${SHA_SHORT}" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Set up Docker Buildx ────────────────────────────────────────────
+      # No explicit driver — lets setup-buildx-action pick the best available
+      # driver on the runner, which avoids the "build reference" summary error
+      # that the docker-container driver triggers on self-hosted runners.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── 4. Log in to GHCR ─────────────────────────────────────────────────
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.PAT_TOKEN }}
+
+      # ── 5. Build & push ───────────────────────────────────────────────────
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          # Tags computed in step 2 (all lowercase):
+          #   ghcr.io/<owner>/<repo>:v2          ← this run's version
+          #   ghcr.io/<owner>/<repo>:latest       ← always the newest
+          #   ghcr.io/<owner>/<repo>:sha-a3f9c12  ← immutable commit pin
+          tags: ${{ steps.meta.outputs.tags }}
+          # Layer cache on runner disk — fast rebuilds with no extra registry.
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to:   type=local,dest=/tmp/.buildx-cache-new,mode=max
+          # OCI standard labels
+          labels: |
+            org.opencontainers.image.title=${{ github.repository }}
+            org.opencontainers.image.description=DevOps Portfolio - Dipesh Vishwakarma
+            org.opencontainers.image.version=${{ steps.meta.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
+
+      # ── 6. Rotate build cache ─────────────────────────────────────────────
+      # Replace old cache with the newly written one so it never grows unboundedly.
+      - name: Rotate build cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+      # ── 7. Summary ────────────────────────────────────────────────────────
+      - name: Print image summary
+        run: |
+          echo "### 🐳 Image published" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field   | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Version | \`${{ steps.meta.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Latest  | \`${{ steps.meta.outputs.image }}:latest\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Commit  | \`${{ steps.meta.outputs.sha_short }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Registry | ghcr.io (private) |" >> "$GITHUB_STEP_SUMMARY"
+      # ---------------------End-of-CI---------------------------------------------
