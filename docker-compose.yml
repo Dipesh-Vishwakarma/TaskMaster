@@ -1,0 +1,59 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: taskmaster-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-taskmaster}
+      POSTGRES_USER: ${POSTGRES_USER:-taskmaster}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taskmaster123}
+    #restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - taskmaster-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-taskmaster}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    container_name: taskmaster-backend
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://taskmaster:taskmaster123@db:5432/taskmaster}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-super-secret-key-change-in-production}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-43200}
+      UPLOAD_DIR: /app/uploads
+      MAX_UPLOAD_SIZE: 10485760
+    #restart: unless-stopped
+    volumes:
+      - uploads_data:/app/uploads
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    networks:
+      - taskmaster-network
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: taskmaster-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    networks:
+      - taskmaster-network
+    depends_on:
+      - backend
+    #restart: unless-stopped
+
+networks:
+  taskmaster-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  uploads_data:
